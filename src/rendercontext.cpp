@@ -24,6 +24,9 @@
 #include <QDBusConnection>
 #include <QDBusInterface>
 #include <QDBusReply>
+#include <QQuickWindow>
+
+#include <QtQuick/private/qsgrenderloop_p.h>
 
 #include <dlfcn.h>
 #include <hybris/common/dlfcn.h>
@@ -31,12 +34,116 @@
 // Clashes with deviceinfo
 #undef None
 
+static const GLchar* COLOR_CONVERSION_VERTEX = {
+    "#version 100\n"
+    "attribute highp vec3 vertexCoord;\n"
+    "attribute highp vec2 textureCoord;\n"
+    "varying highp vec2 uv;\n"
+    "\n"
+    "void main() {\n"
+    "    uv = textureCoord.xy;\n"
+    "    gl_Position = vec4(vertexCoord,1.0);\n"
+    "}\n"
+};
+
+static const GLchar* PASSTHROUGH_SHADER = {
+    "#version 100\n"
+    "precision mediump float;\n"
+    "uniform sampler2D textureSampler;\n"
+    "uniform bool hasAlpha;\n"
+    "varying highp vec2 uv;\n"
+    "\n"
+    "void main() {\n"
+    "    vec3 color = texture2D(textureSampler, uv).rgb;\n"
+    "    float alpha = hasAlpha ? texture2D(textureSampler, uv).a : 1.0;\n"
+    "    gl_FragColor = vec4(color, alpha);\n"
+    "}\n"
+};
+
+static const GLchar* FLIP_COLOR_CHANNELS_SHADER = {
+    "#version 100\n"
+    "precision mediump float;\n"
+    "uniform sampler2D textureSampler;\n"
+    "varying highp vec2 uv;\n"
+    "\n"
+    "void main() {\n"
+    "    gl_FragColor = vec4(texture2D(textureSampler, uv).bgr, 1.0);\n"
+    "}\n"
+};
+
+static const GLchar* FLIP_COLOR_CHANNELS_WITH_ALPHA_SHADER = {
+    "#version 100\n"
+    "precision mediump float;\n"
+    "uniform sampler2D textureSampler;\n"
+    "varying highp vec2 uv;\n"
+    "\n"
+    "void main() {\n"
+    "    gl_FragColor = texture2D(textureSampler, uv).bgra;\n"
+    "}\n"
+};
+
+static const GLchar* RGB32_TO_RGBA8888_SHADER = {
+    "#version 100\n"
+    "precision mediump float;\n"
+    "uniform sampler2D textureSampler;\n"
+    "uniform bool hasAlpha;\n"
+    "varying highp vec2 uv;\n"
+    "\n"
+    "void main() {\n"
+    "    vec4 sampledColor = texture2D(textureSampler, uv);\n"
+    "    vec3 color = sampledColor.bgr;\n"
+    "    float alpha = hasAlpha ? sampledColor.a : 1.0;\n"
+    "    if (hasAlpha) {\n"
+    "        color = vec3(color.r * alpha, color.g * alpha, color.b * alpha);\n"
+    "    }\n"
+    "    gl_FragColor = vec4(color, alpha);\n"
+    "}\n"
+};
+
+static const GLchar* RGB32_TO_RGBA8888_PREMULT_SHADER = {
+    "#version 100\n"
+    "precision mediump float;\n"
+    "uniform sampler2D textureSampler;\n"
+    "uniform bool hasAlpha;\n"
+    "varying highp vec2 uv;\n"
+    "\n"
+    "void main() {\n"
+    "    vec4 sampledColor = texture2D(textureSampler, uv);\n"
+    "    vec3 color = sampledColor.bgr;\n"
+    "    float alpha = hasAlpha ? sampledColor.a : 1.0;\n"
+    "    if (hasAlpha) {\n"
+    "        if (alpha == 0.0) { color = vec3(0.0, 0.0, 0.0); }"
+    "        else { }\n"
+    "    }\n"
+    "    gl_FragColor = vec4(color, alpha);\n"
+    "}\n"
+};
+
+static const GLchar* RED_AND_BLUE_SWAP_SHADER = {
+    "#version 100\n"
+    "precision mediump float;\n"
+    "uniform sampler2D textureSampler;\n"
+    "uniform bool hasAlpha;\n"
+    "varying highp vec2 uv;\n"
+    "\n"
+    "void main() {\n"
+    "    vec3 color = texture2D(textureSampler, uv).bgr;\n"
+    "    float alpha = hasAlpha ? texture2D(textureSampler, uv).a : 1.0;\n"
+    "    gl_FragColor = vec4(color, alpha);\n"
+    "}\n"
+};
+
+
 RenderContext::RenderContext(QSGContext* context) : QSGDefaultRenderContext(context),
-    m_logging(false), m_quirks(RenderContext::NoQuirk), m_libuiFound(false), m_deviceInfo(DeviceInfo::None)
+    m_logging(false), m_quirks(RenderContext::NoQuirk), m_libuiFound(false), m_deviceInfo(DeviceInfo::None),
+    m_textureCreator(new GrallocTextureCreator(this)), m_initialized(false), m_colorShadersBuilt(false)
 {
-    // Don't enable use of color correction shaders if not explicitly specified
-    if (m_deviceInfo.get("HaliumQsgUseShaders", "false") == "false") {
+    // Disable use of color correction shaders if explicitly requested
+    if (m_deviceInfo.get("HaliumQsgUseShaders", "true") == "false") {
         m_quirks |= RenderContext::DisableConversionShaders;
+    }
+    if (m_deviceInfo.get("HaliumQsgUseRtScheduling", "false") == "true") {
+        m_quirks |= RenderContext::UseRtScheduling;
     }
 }
 
@@ -45,24 +152,36 @@ void RenderContext::messageReceived(const QOpenGLDebugMessage &debugMessage)
     qWarning() << "OpenGL log:" << debugMessage.message();
 }
 
-ShaderCache RenderContext::colorCorrectionShaders()
-{
-    return m_cachedShaders;
-}
-
 bool RenderContext::init() const
 {
     if (qEnvironmentVariableIsSet("HALIUMQSG_OPENGL_LOG")) {
         m_logging = true;
         connect(&m_glLogger, &QOpenGLDebugLogger::messageLogged, this, &RenderContext::messageReceived);
 
-        QOpenGLContext *ctx = QOpenGLContext::currentContext();
         m_glLogger.initialize();
         m_glLogger.startLogging(QOpenGLDebugLogger::SynchronousLogging);
     }
 
 #if 0
-    // Attempt to get FIFO scheduling from mechanicd
+    // Attempt to get FIFO scheduling from rtkit-daemon
+    if (m_quirks & RenderContext::UseRtScheduling) {
+        const QString connName = QStringLiteral("haliumqsgcontext");
+
+        QDBusConnection shortConnection = QDBusConnection::connectToBus(QDBusConnection::SystemBus, connName);
+        QDBusInterface interface(QStringLiteral("org.freedesktop.RealtimeKit1"),
+                                 QStringLiteral("/org/freedesktop/RealtimeKit1"),
+                                 QStringLiteral("org.freedesktop.RealtimeKit1"),
+                                 shortConnection);
+
+        QDBusReply<int> reply = interface.call(QStringLiteral("MakeThreadRealtime"), QVariant((qulonglong)gettid()), QVariant((uint)10));
+        if (!reply.isValid()) {
+            qDebug() << "Failed to acquire realtime scheduling on render thread" << reply.error().message();
+        }
+        QDBusConnection::disconnectFromBus(connName);
+    }
+#endif
+#if 0
+    // Have mechanicd place us in an appropriate schedtune cgroup
     {
         const QString connName = QStringLiteral("haliumqsgcontext");
 
@@ -74,7 +193,7 @@ bool RenderContext::init() const
 
         QDBusReply<void> reply = interface.call(QStringLiteral("requestSchedulingChange"));
         if (!reply.isValid()) {
-            qDebug() << "Failed to acquire realtime scheduling on render thread" << reply.error().message();
+            qDebug() << "Failed to acquire schedtune scheduling on render thread" << reply.error().message();
         }
         QDBusConnection::disconnectFromBus(connName);
     }
@@ -96,16 +215,30 @@ bool RenderContext::init() const
         hybris_dlclose(handle);
     }
 
-    return compileColorShaders();
+    return true;
 }
 
 QSGTexture* RenderContext::createTexture(const QImage &image, uint flags) const
 {
     QSGTexture* texture = nullptr;
+    int numChannels = 0;
+    ColorShader shader = ColorShader_None;
 
-    static const bool colorShadersBuilt = init();
+    // Asynchronously upload textures whenever possible to go easy on the render thread
+    const bool async = (openglContext() && openglContext()->thread() == QThread::currentThread()) ||
+                        image.width() > m_maxTextureSize || image.height() > m_maxTextureSize;
+    const bool alpha = image.hasAlphaChannel() && (flags & QQuickWindow::TextureHasAlphaChannel); 
 
-    if (!colorShadersBuilt)
+    if (!m_initialized)
+        m_initialized = init();
+
+    if (!m_initialized)
+        goto default_method;
+
+    if (!m_colorShadersBuilt)
+        m_colorShadersBuilt = compileColorShaders();
+
+    if (!m_colorShadersBuilt)
         goto default_method;
 
     // We don't support texture atlases, so defer to Qt's internal implementation
@@ -116,7 +249,13 @@ QSGTexture* RenderContext::createTexture(const QImage &image, uint flags) const
     if (flags & QSGRenderContext::CreateTexture_Mipmap)
         goto default_method;
 
-    texture = GrallocTextureCreator::createTexture(image, m_cachedShaders, m_maxTextureSize);
+    if (GrallocTextureCreator::convertFormat(image, numChannels, shader, alpha) < 0 || numChannels == 0)
+        goto default_method;
+
+    if ((m_quirks & RenderContext::DisableConversionShaders) && (shader != ColorShader_None))
+        goto default_method;
+
+    texture = m_textureCreator->createTexture(image, m_cachedShaders, m_maxTextureSize, flags, async, openglContext());
     if (texture)
         return texture;
 
@@ -128,7 +267,10 @@ default_method:
 
 bool RenderContext::compileColorShaders() const
 {
-    QOpenGLFunctions* gl = QOpenGLContext::currentContext()->functions();
+    if (!openglContext())
+        return false;
+
+    QOpenGLFunctions* gl = openglContext()->functions();
 
     // Store the texture geometry limit to decide later on whether to use Gralloc or not
     gl->glGetIntegerv(GL_MAX_TEXTURE_SIZE, &m_maxTextureSize);
@@ -136,100 +278,62 @@ bool RenderContext::compileColorShaders() const
     if (m_logging)
         qDebug() << "Max texture size:" << m_maxTextureSize;
 
-    m_cachedShaders[ColorShader_None] = std::make_shared<ShaderBundle>(0, 0, 0, 0);
+    m_cachedShaders.clear();
+    m_cachedShaders[ColorShader_None] = std::make_shared<ShaderBundle>(nullptr, 0, 0, 0, 0);
 
     // When conversion shaders are disabled the application might still use EGLImage or the default
     if (m_quirks & RenderContext::DisableConversionShaders)
         return true;
 
     for (int i = (int)ColorShader::ColorShader_First; i < ColorShader::ColorShader_Count; i++) {
-        auto program = gl->glCreateProgram();
-        GLint compiled = GL_FALSE;
+        auto program = std::make_shared<QOpenGLShaderProgram>();
         bool success = false;
 
-        if (m_logging)
-            qDebug() << "Compiling shader" << i;
+        success = program->addCacheableShaderFromSourceCode(QOpenGLShader::Vertex, COLOR_CONVERSION_VERTEX);
 
-        // Compile the vertex shader
-        GLuint vertexShader = gl->glCreateShader(GL_VERTEX_SHADER);
-        gl->glShaderSource(vertexShader, 1, &COLOR_CONVERSION_VERTEX, nullptr);
-        gl->glCompileShader(vertexShader);
-        gl->glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &compiled);
-        success = (compiled == GL_TRUE);
         if (!success) {
-            qWarning() << "Failed to compile vertex shader hence using defaults.";
-            GLsizei log_length = 0;
-            GLchar message[1024];
-            gl->glGetShaderInfoLog(vertexShader, 1024, &log_length, message);
-            qWarning() << QString::fromLocal8Bit(message, log_length);
+            qWarning() << "Failed to compile vertex shader hence using defaults. Reason:";
+            qWarning() << program->log();
             return false;
         }
-        gl->glAttachShader(program, vertexShader);
-
-        static const auto compileFragmentShader = [](QOpenGLFunctions* gl, GLuint program, const GLchar* source) {
-            GLint compiled = GL_FALSE;
-            GLuint fragmentShader = gl->glCreateShader(GL_FRAGMENT_SHADER);
-
-            gl->glShaderSource(fragmentShader, 1, &source, nullptr);
-            gl->glCompileShader(fragmentShader);
-            gl->glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &compiled);
-
-            if (compiled != GL_TRUE) {
-                GLsizei log_length = 0;
-                GLchar message[1024];
-                gl->glGetShaderInfoLog(fragmentShader, 1024, &log_length, message);
-                qWarning() << QString::fromLocal8Bit(message, log_length);
-            } else {
-                gl->glAttachShader(program, fragmentShader);
-            }
-
-            return (compiled == GL_TRUE);
-        };
 
         switch (i) {
         case ColorShader_Passthrough:
-        {
-            success = compileFragmentShader(gl, program, PASSTHROUGH_SHADER);
+            success = program->addCacheableShaderFromSourceCode(QOpenGLShader::Fragment, PASSTHROUGH_SHADER);
             break;
-        }
         case ColorShader_FlipColorChannels:
-        {
-            success = compileFragmentShader(gl, program, FLIP_COLOR_CHANNELS_SHADER);
+            success = program->addCacheableShaderFromSourceCode(QOpenGLShader::Fragment, FLIP_COLOR_CHANNELS_SHADER);
             break;
-        }
         case ColorShader_FlipColorChannelsWithAlpha:
-        {
-            success = compileFragmentShader(gl, program, FLIP_COLOR_CHANNELS_WITH_ALPHA_SHADER);
+            success = program->addCacheableShaderFromSourceCode(QOpenGLShader::Fragment, FLIP_COLOR_CHANNELS_WITH_ALPHA_SHADER);
             break;
-        }
         case ColorShader_RGB32ToRGBX8888:
-        {
-            success = compileFragmentShader(gl, program, RGB32_TO_RGBA8888_SHADER);
+            success = program->addCacheableShaderFromSourceCode(QOpenGLShader::Fragment, RGB32_TO_RGBA8888_SHADER);
             break;
-        }
+        case ColorShader_RGB32ToRGBX8888_Premult:
+            success = program->addCacheableShaderFromSourceCode(QOpenGLShader::Fragment, RGB32_TO_RGBA8888_PREMULT_SHADER);
+            break;
         case ColorShader_RedAndBlueSwap:
-        {
-            success = compileFragmentShader(gl, program, RED_AND_BLUE_SWAP_SHADER);
+            success = program->addCacheableShaderFromSourceCode(QOpenGLShader::Fragment, RED_AND_BLUE_SWAP_SHADER);
             break;
-        }
         default:
             qWarning() << "No color shader type" << i;
             break;
         }
 
         if (!success) {
-            qWarning() << "Failed to compile fragment shader" << i << "hence using defaults.";
+            qWarning() << "Failed to compile fragment shader" << i << "hence using defaults. Reason:";
+            qWarning() << program->log();
             return false;
         }
 
-        gl->glBindAttribLocation(program, 0, "vertexCoord");                                                 
-        gl->glBindAttribLocation(program, 1, "textureCoord");                                                 
+        gl->glBindAttribLocation(program->programId(), 0, "vertexCoord");                                                 
+        gl->glBindAttribLocation(program->programId(), 1, "textureCoord");                                                 
 
-        gl->glLinkProgram(program);
-        gl->glGetProgramiv(program, GL_LINK_STATUS, &compiled);
-        success = (compiled == GL_TRUE);
+        success = program->link();
         if (!success) {
-            qWarning() << "Failed to link shader" << i << "hence using defaults.";
+            qWarning() << "Failed to link shader" << i << "hence using defaults. Reason:";
+            qWarning() << program->log();
             return false;
         }
 
@@ -237,17 +341,10 @@ bool RenderContext::compileColorShaders() const
             program,
             0,
             1,
-            gl->glGetUniformLocation(program, "textureSampler")
+            gl->glGetUniformLocation(program->programId(), "textureSampler"),
+            gl->glGetUniformLocation(program->programId(), "hasAlpha")
         );
         m_cachedShaders[(ColorShader)i] = bundle;
-
-        if (m_logging) {
-            qDebug() << "Shader" << i << "compiled:" << program << bundle->vertexCoord << bundle->textureCoord << bundle->texture;
-        }
     }
-
-    if (m_logging)
-        qDebug() << "Using libui_compat_layer & shaders for Qt textures";
-
     return true;
 }

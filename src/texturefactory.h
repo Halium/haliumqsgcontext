@@ -8,13 +8,14 @@
 #include <memory>
 
 #include "rendercontext.h"
+#include "gralloctexture.h"
 
 class TextureFactory : public QQuickTextureFactory
 {
     Q_OBJECT
 
 public:
-    TextureFactory(RenderContext* renderContext, const QImage& image);
+    TextureFactory(const QImage& image);
 
     virtual QSGTexture* createTexture(QQuickWindow *window) const override;
     virtual int textureByteCount() const override;
@@ -24,8 +25,6 @@ public:
 private:
     RenderContext* m_renderContext;
     QImage m_image;
-    QSize mutable m_size;
-    int mutable m_byteCount;
 };
 
 #endif

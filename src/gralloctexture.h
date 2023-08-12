@@ -21,18 +21,24 @@
 #include <QImage>
 #include <QSize>
 #include <QSGTexture>
-#include <QDebug>
 #include <QMutex>
-#include <QMatrix4x4>
 #include <QThread>
+#include <QThreadPool>
+#include <QWaitCondition>
 
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
 #include <QOpenGLShaderProgram>
+#include <QOpenGLFramebufferObject>
+#include <QOpenGLVertexArrayObject>
+#include <QOpenGLBuffer>
+#include <QOpenGLTexture>
 
+#include <atomic>
+#include <functional>
 #include <memory>
-#include <mutex>
 
+#define EGL_NO_X11 1
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 
@@ -41,6 +47,7 @@
 #include <hardware/gralloc.h>
 
 #undef Bool
+#undef None
 
 enum ColorShader {
     ColorShader_None = 0,
@@ -48,6 +55,7 @@ enum ColorShader {
     ColorShader_FlipColorChannels,
     ColorShader_FlipColorChannelsWithAlpha,
     ColorShader_RGB32ToRGBX8888,
+    ColorShader_RGB32ToRGBX8888_Premult,
     ColorShader_RedAndBlueSwap,
 
     ColorShader_First = ColorShader_Passthrough,
@@ -55,80 +63,14 @@ enum ColorShader {
     ColorShader_Count = ColorShader_Last + 1
 };
 
-static const GLchar* COLOR_CONVERSION_VERTEX = {
-    "#version 100\n"
-    "attribute highp vec3 vertexCoord;\n"
-    "attribute highp vec2 textureCoord;\n"
-    "varying highp vec2 uv;\n"
-    "\n"
-    "void main() {\n"
-    "    uv = textureCoord.xy;\n"
-    "    gl_Position = vec4(vertexCoord,1.0);\n"
-    "}\n"
-};
-
-static const GLchar* PASSTHROUGH_SHADER = {
-    "#version 100\n"
-    "precision mediump float;\n"
-    "uniform sampler2D textureSampler;\n"
-    "varying highp vec2 uv;\n"
-    "\n"
-    "void main() {\n"
-    "    gl_FragColor = vec4(texture2D(textureSampler, uv).rgba);\n"
-    "}\n"
-};
-
-static const GLchar* FLIP_COLOR_CHANNELS_SHADER = {
-    "#version 100\n"
-    "precision mediump float;\n"
-    "uniform sampler2D textureSampler;\n"
-    "varying highp vec2 uv;\n"
-    "\n"
-    "void main() {\n"
-    "    gl_FragColor = vec4(texture2D(textureSampler, uv).bgr, 1.0);\n"
-    "}\n"
-};
-
-static const GLchar* FLIP_COLOR_CHANNELS_WITH_ALPHA_SHADER = {
-    "#version 100\n"
-    "precision mediump float;\n"
-    "uniform sampler2D textureSampler;\n"
-    "varying highp vec2 uv;\n"
-    "\n"
-    "void main() {\n"
-    "    gl_FragColor = texture2D(textureSampler, uv).bgra;\n"
-    "}\n"
-};
-
-static const GLchar* RGB32_TO_RGBA8888_SHADER = {
-    "#version 100\n"
-    "precision mediump float;\n"
-    "uniform sampler2D textureSampler;\n"   
-    "varying highp vec2 uv;\n"
-    "\n"
-    "void main() {\n"
-    "    gl_FragColor = texture2D(textureSampler, uv).rgba;\n"
-    "}\n"
-};
-
-static const GLchar* RED_AND_BLUE_SWAP_SHADER = {
-    "#version 100\n"
-    "precision mediump float;\n"
-    "uniform sampler2D textureSampler;\n"
-    "varying highp vec2 uv;\n"
-    "\n"
-    "void main() {\n"
-    "    gl_FragColor = texture2D(textureSampler, uv).bgra;\n"
-    "}\n"
-};
-
 struct ShaderBundle {
-    ShaderBundle(GLuint program, int vertexCoord, int textureCoord, int textureSampler) :
-        program(program), vertexCoord(vertexCoord), textureCoord(textureCoord), texture(textureSampler) {}
-    const GLuint program;
+    ShaderBundle(std::shared_ptr<QOpenGLShaderProgram> program, int vertexCoord, int textureCoord, int textureSampler, int hasAlpha) :
+        program(program), vertexCoord(vertexCoord), textureCoord(textureCoord), texture(textureSampler), alpha(hasAlpha) {}
+    std::shared_ptr<QOpenGLShaderProgram> program;
     const int vertexCoord = -1;
     const int textureCoord = -1;
     const int texture = -1;
+    const int alpha = -1;
 };
 
 typedef std::map<ColorShader, std::shared_ptr<ShaderBundle>> ShaderCache;
@@ -140,16 +82,39 @@ struct EglImageFunctions {
     PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES;
 };
 
+struct GLState {
+    GLint prevProgram = 0;
+    GLint prevFbo = 0;
+    GLint prevTexture = 0;
+    GLint prevActiveTexture = 0;
+    GLint prevArrayBuf = 0;
+    GLint prevElementArrayBuf = 0;
+    GLint prevViewport[4];
+    GLint prevScissor[4];
+    GLint prevColorClear[4];
+};
+
 class GrallocTexture;
-class GrallocTextureCreator
+class GrallocTextureCreator : public QObject
 {
+    Q_OBJECT
 public:
-    static GrallocTexture* createTexture(const QImage& image, ShaderCache& cachedShaders, const int& maxTextureSize);
-    static int convertFormat(const QImage& image, int& numChannels, ColorShader& conversionShader);
-    static uint32_t convertLockUsage(const QImage& image);
+    GrallocTextureCreator(QObject* parent = nullptr);
+
+    GrallocTexture* createTexture(const QImage& image, ShaderCache& cachedShaders, const int maxTextureSize, const uint flags, const bool async, QOpenGLContext* gl);
+    static int convertFormat(const QImage& image, int& numChannels, ColorShader& conversionShader, const bool alpha);
+
+public Q_SLOTS:
+    void signalUploadComplete(const GrallocTexture* texture, struct graphic_buffer* handle, const int textureSize);
+
+Q_SIGNALS:
+    void uploadComplete(const GrallocTexture* texture, EGLImageKHR image, const int textureSize);
 
 private:
-    static uint32_t convertUsage(const QImage& image);
+    QThreadPool* m_threadPool;
+    bool m_debug;
+    static constexpr uint32_t convertUsage();
+    static constexpr uint32_t convertLockUsage();
 };
 
 class GrallocTexture : public QSGTexture
@@ -165,26 +130,41 @@ public:
     virtual bool hasMipmaps() const override;
     virtual void bind() override;
 
-    void* buffer() const;
     int textureByteCount() const;
 
+public Q_SLOTS:
     void provideSizeInfo(const QSize& size);
-    void createEglImage(struct graphic_buffer* handle, const int textureSize) const;
+    void createdEglImage(const GrallocTexture* texture, EGLImageKHR image, const int textureSize);
+
+private Q_SLOTS:
+    bool drawTexture(QOpenGLFunctions* gl) const;
 
 private:
-    GrallocTexture(const bool& hasAlphaChannel, std::shared_ptr<ShaderBundle> conversionShader, EglImageFunctions eglImageFunctions);
+    GrallocTexture(GrallocTextureCreator* creator, const bool hasAlphaChannel,
+                   std::shared_ptr<ShaderBundle> conversionShader,
+                   EglImageFunctions eglImageFunctions, const bool async,
+                   QOpenGLContext* gl);
     ~GrallocTexture();
 
-    void ensureEmptyTexture(QOpenGLFunctions* gl) const;
-    void renderShader(QOpenGLFunctions* gl) const;
-    void bindImageOnly(QOpenGLFunctions* gl) const;
-    bool renderTexture() const;
+    void ensureBoundTexture(QOpenGLFunctions* gl) const;
+    void ensureFbo(QOpenGLFunctions* gl) const;
+	
+    void renderWithShader(QOpenGLFunctions* gl) const;
+    bool dumpImageOnly(QOpenGLFunctions* gl) const;
+    bool renderTexture(QOpenGLFunctions* gl) const;
+
     void awaitUpload() const;
+
+    const GLState storeGlState(QOpenGLFunctions* gl) const;
+    void restoreGlState(QOpenGLFunctions* gl, const GLState& state) const;
+
+    void releaseResources() const;
 
     bool m_hasAlphaChannel;
     std::shared_ptr<ShaderBundle> m_shaderCode;
 
-    mutable struct graphic_buffer* m_buffer;
+    mutable std::unique_ptr<QOpenGLFramebufferObject> m_fbo;
+
     mutable EGLImageKHR m_image;
     mutable int m_textureSize;
     mutable QSize m_size;
@@ -192,15 +172,17 @@ private:
     mutable bool m_bound;
     mutable bool m_valid;
     mutable bool m_rendered;
-    mutable bool m_uploadInProgress;
+
+    mutable QWaitCondition m_uploadCondition;
+    mutable QMutex m_uploadMutex;
+
+    bool m_async;
+    bool m_uploaded;
 
     EglImageFunctions m_eglImageFunctions;
 
-    mutable std::condition_variable m_infoCondition;
-    mutable std::condition_variable m_uploadCondition;
-    mutable std::mutex m_infoMutex;
-    mutable std::mutex m_uploadMutex;
-
+    GrallocTextureCreator* m_creator;
+    QOpenGLContext* m_gl;
     friend class GrallocTextureCreator;
 };
 

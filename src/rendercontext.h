@@ -33,12 +33,12 @@ public:
     explicit RenderContext(QSGContext* context);
 
     QSGTexture* createTexture(const QImage &image, uint flags = QSGRenderContext::CreateTexture_Alpha) const override;
-    ShaderCache colorCorrectionShaders();
 
 private:
     enum Quirk {
         NoQuirk = 0x0,
-        DisableConversionShaders = 0x1
+        DisableConversionShaders = 0x1,
+        UseRtScheduling = 0x2
     };
     Q_DECLARE_FLAGS(Quirks, Quirk)
 
@@ -54,6 +54,9 @@ private:
     bool mutable m_libuiFound;
     RenderContext::Quirks mutable m_quirks;
     DeviceInfo m_deviceInfo;
+    mutable GrallocTextureCreator* m_textureCreator;
+    mutable bool m_initialized;
+    mutable bool m_colorShadersBuilt;
 };
 
 #endif

@@ -1,5 +1,3 @@
-project(haliumqsgcontext)
-
 include_directories(
     SYSTEM
 
@@ -35,6 +33,8 @@ target_link_libraries(
     Qt5::Core
     Qt5::DBus
     Qt5::Quick
+    Qt5::Concurrent
 )
 
+set_property(TARGET haliumqsgcontext PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 install(TARGETS haliumqsgcontext LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}/qt5/plugins/scenegraph")

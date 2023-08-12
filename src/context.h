@@ -34,7 +34,6 @@ public:
     QQuickTextureFactory* createTextureFactory(const QImage &image);
 
 private:
-    RenderContext* m_factoryRenderContext;
     bool m_useHaliumQsgAnimationDriver;
 };
 

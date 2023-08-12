@@ -1,12 +1,20 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.9)
+project(haliumqsgcontext)
 
 # Find includes in corresponding build directories
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
-# Instruct CMake to run moc automatically when needed.
 set(CMAKE_AUTOMOC ON)
-
 set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
+set(CMAKE_CXX_FLAGS "-Wall -Wextra")
+set(CMAKE_CXX_FLAGS_DEBUG "-g")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
 include(FindPkgConfig)
 find_package(Qt5Core 5.9 REQUIRED)
@@ -14,6 +22,7 @@ find_package(Qt5DBus 5.9 REQUIRED)
 find_package(Qt5Gui 5.9 REQUIRED)
 find_package(Qt5Qml 5.9 REQUIRED)
 find_package(Qt5Quick 5.9 REQUIRED)
+find_package(Qt5Concurrent 5.9 REQUIRED)
 
 pkg_check_modules(EGL egl)
 pkg_check_modules(GLES glesv2)
@@ -37,6 +46,7 @@ endif()
 get_target_property(Qt5Gui_QPA_Plugin_Path Qt5::Gui IMPORTED_LOCATION_PLATFORMS)
 
 add_definitions(-DQT_NO_KEYWORDS)
+add_definitions(-DQT_NO_DEBUG_OUTPUT)
 
 # add subdirectories to build
 add_subdirectory(src)
