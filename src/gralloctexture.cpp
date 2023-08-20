@@ -581,7 +581,6 @@ void GrallocTexture::renderWithShader(QOpenGLFunctions* gl) const
 
     // Render the temporary texture through the shader into the color attachment
     gl->glDrawArrays(GL_TRIANGLES, 0, 6);
-    gl->glFlush();
 
     // We're done, reset the use of the shader
     vao.release();
