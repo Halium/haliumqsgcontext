@@ -342,6 +342,7 @@ int GrallocTexture::textureId() const
         ensureFbo(gl);
     }
 
+#if 0
     if (m_async) {
         QMutexLocker locker(&m_uploadMutex);
         would_wait = (m_image == EGL_NO_IMAGE_KHR);
@@ -351,6 +352,7 @@ int GrallocTexture::textureId() const
     // Also should speed up getting texture contents rendered in case of a synchronous upload.
     if (!would_wait)
         drawTexture(gl);
+#endif
 
     if (!m_shaderCode || !m_shaderCode->program) {
         return m_texture;
@@ -473,23 +475,22 @@ const GLState GrallocTexture::storeGlState(QOpenGLFunctions* gl) const
 
 void GrallocTexture::restoreGlState(QOpenGLFunctions* gl, const GLState& state) const
 {
-    // Reset OpenGL state that we messed with
-
     // That's enough for the bind-only usecase
     if (!m_shaderCode || !m_shaderCode->program) {
         gl->glBindTexture(GL_TEXTURE_2D, state.prevTexture);
         return;
     }
 
+    // Reset the rest of the OpenGL state that we messed with
     gl->glBindFramebuffer(GL_FRAMEBUFFER, state.prevFbo);
     gl->glClearColor(state.prevColorClear[0], state.prevColorClear[1], state.prevColorClear[2], state.prevColorClear[3]);
     gl->glViewport(state.prevViewport[0], state.prevViewport[1], state.prevViewport[2], state.prevViewport[3]);
     gl->glScissor(state.prevScissor[0], state.prevScissor[1], state.prevScissor[2], state.prevScissor[3]);
-    gl->glActiveTexture(state.prevActiveTexture);
-    gl->glBindTexture(GL_TEXTURE_2D, state.prevTexture);
-    gl->glUseProgram(state.prevProgram);
     gl->glBindBuffer(GL_ARRAY_BUFFER, state.prevArrayBuf);
     gl->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, state.prevElementArrayBuf);
+    gl->glUseProgram(state.prevProgram);
+    gl->glActiveTexture(state.prevActiveTexture);
+    gl->glBindTexture(GL_TEXTURE_2D, state.prevTexture);
 }
 
 void GrallocTexture::renderWithShader(QOpenGLFunctions* gl) const
@@ -531,7 +532,7 @@ void GrallocTexture::renderWithShader(QOpenGLFunctions* gl) const
     gl->glViewport(0, 0, width, height);
     gl->glScissor(0, 0, width, height);
 
-#if 1
+#if 0 // It's GLES 3.0 only
     const GLenum attachments[2] = { GL_DEPTH_ATTACHMENT, GL_STENCIL_ATTACHMENT };
     m_gl->extraFunctions()->glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, attachments);
 #endif
@@ -539,14 +540,12 @@ void GrallocTexture::renderWithShader(QOpenGLFunctions* gl) const
     gl->glClearColor(0.0, 0.0, 0.0, m_hasAlphaChannel ? 0.0 : 1.0);
     gl->glClear(GL_COLOR_BUFFER_BIT);
 
-    // Now apply the shader
+    // Now apply the shader, for that we need a few buffers
     QOpenGLVertexArrayObject vao;
-    QOpenGLBuffer vertexBuffer;
-    QOpenGLBuffer textureBuffer;
-
     vao.create();
     vao.bind();
 
+    QOpenGLBuffer vertexBuffer;
     vertexBuffer.create();
     vertexBuffer.bind();
     vertexBuffer.setUsagePattern(QOpenGLBuffer::StaticDraw);
@@ -555,6 +554,7 @@ void GrallocTexture::renderWithShader(QOpenGLFunctions* gl) const
     m_shaderCode->program->setAttributeBuffer(m_shaderCode->vertexCoord, GL_FLOAT, 0, 3, 0);
     vertexBuffer.release();
 
+    QOpenGLBuffer textureBuffer;
     textureBuffer.create();
     textureBuffer.bind();
     textureBuffer.setUsagePattern(QOpenGLBuffer::StaticDraw);
@@ -581,7 +581,6 @@ void GrallocTexture::renderWithShader(QOpenGLFunctions* gl) const
 
     // Render the temporary texture through the shader into the color attachment
     gl->glDrawArrays(GL_TRIANGLES, 0, 6);
-    gl->glFlush();
 
     // We're done, reset the use of the shader
     vao.release();
