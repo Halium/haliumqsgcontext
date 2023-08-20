@@ -95,7 +95,7 @@ int GrallocTextureCreator::convertFormat(const QImage& image, int& numChannels, 
     case QImage::Format_RGB32:
         conversionShader = alpha ? ColorShader_None : ColorShader_RGB32ToRGBX8888;
         numChannels = 4;
-        return alpha ? HAL_PIXEL_FORMAT_BGRA_8888 : HAL_PIXEL_FORMAT_RGBA_8888;
+        return alpha ? HAL_PIXEL_FORMAT_BGRA_8888 : HAL_PIXEL_FORMAT_RGBX_8888;
 
     case QImage::Format_ARGB32:
         conversionShader = ColorShader_RGB32ToRGBX8888;
@@ -105,7 +105,7 @@ int GrallocTextureCreator::convertFormat(const QImage& image, int& numChannels, 
     case QImage::Format_ARGB32_Premultiplied:
         conversionShader = alpha ? ColorShader_None : ColorShader_RGB32ToRGBX8888;
         numChannels = 4;
-        return alpha ? HAL_PIXEL_FORMAT_BGRA_8888 : HAL_PIXEL_FORMAT_RGBX_8888;
+        return alpha ? HAL_PIXEL_FORMAT_BGRA_8888 : HAL_PIXEL_FORMAT_RGBA_8888;
 
     case QImage::Format_RGB16:
         break;
