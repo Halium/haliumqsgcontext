@@ -9,6 +9,9 @@ include_directories(
     ${Qt5Quick_PRIVATE_INCLUDE_DIRS}
 )
 
+add_definitions(-DMESA_EGL_NO_X11_HEADERS)
+add_definitions(-DEGL_NO_X11)
+
 add_library(
     haliumqsgcontext
     SHARED

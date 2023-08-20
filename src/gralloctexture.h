@@ -38,16 +38,12 @@
 #include <functional>
 #include <memory>
 
-#define EGL_NO_X11 1
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 
 #include <hybris/ui/ui_compatibility_layer.h>
 #include <hybris/gralloc/gralloc.h>
 #include <hardware/gralloc.h>
-
-#undef Bool
-#undef None
 
 enum ColorShader {
     ColorShader_None = 0,
