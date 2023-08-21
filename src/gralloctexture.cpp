@@ -531,7 +531,7 @@ void GrallocTexture::renderWithShader(QOpenGLFunctions* gl) const
     gl->glViewport(0, 0, width, height);
     gl->glScissor(0, 0, width, height);
 
-#if 1
+#if 0 // GLES 3.0 only
     const GLenum attachments[2] = { GL_DEPTH_ATTACHMENT, GL_STENCIL_ATTACHMENT };
     m_gl->extraFunctions()->glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, attachments);
 #endif
