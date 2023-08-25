@@ -1,3 +1,11 @@
+haliumqsgcontext (0.3) UNRELEASED; urgency=low
+
+  * Multithreaded texture uploads for various QImage formats
+  * Uses either GPU shaders for swizzling or binds the EGLImage when possible
+  * Configuration using libdeviceinfo
+
+ -- Alfred Neumayer <dev.beidl@gmail.com>  Thu, 11 Aug 2022 04:40:43 +0200
+
 haliumqsgcontext (0.2) UNRELEASED; urgency=low
 
   * More supported QImage formats in GrallocTexture
