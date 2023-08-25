@@ -570,8 +570,8 @@ void GrallocTexture::renderWithShader(QOpenGLFunctions* gl) const
     gl->glGenTextures(1, &tmpTexture);
     gl->glActiveTexture(GL_TEXTURE0 + textureUnit);
     gl->glBindTexture(GL_TEXTURE_2D, tmpTexture);
-    gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     m_eglImageFunctions.glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, m_image);
@@ -617,7 +617,7 @@ bool GrallocTexture::drawTexture(QOpenGLFunctions* gl) const
     if (!m_rendered) {
         if (m_async) {
             QMutexLocker locker(&m_uploadMutex);
-            wait = (m_image == EGL_NO_IMAGE_KHR);
+            wait = !m_uploaded;
         }
 
         if (wait) {
