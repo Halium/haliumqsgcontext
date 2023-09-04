@@ -29,6 +29,9 @@
 
 #include <sys/sysinfo.h>
 
+#include <deviceinfo/deviceinfo.h>
+#include <numeric>
+
 extern "C" {
 void hybris_ui_initialize();
 }
@@ -50,19 +53,32 @@ EglImageFunctions::EglImageFunctions()
         throw std::runtime_error("glEGLImageTargetTexture2DOES");
 }
 
-static inline QThreadPool* initThreadPool()
+static inline QThreadPool* initThreadPool(const int maxThreads)
 {
+    if (maxThreads <= 0) {
+       return nullptr;
+    }
+
     // Leave room for the render and main threads to be scheduled often
     // Pools 2 uploader threads at minimum.
-    const int maxThreads = std::max<int>(2, get_nprocs_conf() - 2);
     QThreadPool* pool = new QThreadPool();
     pool->setMaxThreadCount(maxThreads);
     pool->setExpiryTimeout(5000);
     return pool;
 }
 
-GrallocTextureCreator::GrallocTextureCreator(QObject* parent) :
-    QObject(parent), m_threadPool(initThreadPool()), m_debug(qEnvironmentVariableIsSet("HALIUMQSG_LOG_TEXTURES"))
+static inline int preferredNumberOfThreads()
+{
+    DeviceInfo deviceInfo;
+    const std::string default_value = std::to_string(std::max<int>(2, get_nprocs_conf() - 2));
+    const std::string ret = deviceInfo.get("HaliumQsgUploadThreads", default_value);
+    return std::stoi(ret);
+}
+
+GrallocTextureCreator::GrallocTextureCreator(QObject* parent) : QObject(parent),
+    m_debug(qEnvironmentVariableIsSet("HALIUMQSG_LOG_TEXTURES")),
+    m_nthreads(preferredNumberOfThreads()),
+    m_threadPool(initThreadPool(m_nthreads))
 {
 
 }
@@ -195,7 +211,7 @@ GrallocTexture* GrallocTextureCreator::createTexture(const QImage& image, Shader
     int numChannels = 0;
     ColorShader conversionShader = ColorShader_None;
 
-    const bool hasAlphaChannel = image.hasAlphaChannel() && (flags & QQuickWindow::TextureHasAlphaChannel); 
+    const bool hasAlphaChannel = image.hasAlphaChannel() && (flags & QQuickWindow::TextureHasAlphaChannel);
     const int format = convertFormat(image, numChannels, conversionShader, hasAlphaChannel);
     if (format < 0) {
         qDebug() << "Unknown color format" << image.format();
@@ -214,11 +230,13 @@ GrallocTexture* GrallocTextureCreator::createTexture(const QImage& image, Shader
             return nullptr;
 
         try {
+            const bool supportsThreading = (m_nthreads > 0);
             const bool threadPoolCongested = m_threadPool->activeThreadCount() >= m_threadPool->maxThreadCount();
-            texture = new GrallocTexture(this, hasAlphaChannel, shaderBundle, eglImageFunctions, (async && !threadPoolCongested), gl);
+            const bool uploadAsynchronously = (supportsThreading && async && !threadPoolCongested);
+            texture = new GrallocTexture(this, hasAlphaChannel, shaderBundle, eglImageFunctions, uploadAsynchronously, gl);
 
             if (m_debug) {
-                qInfo() << QThread::currentThread() << "Texture created" << texture << "async & not congested:" << (async && !threadPoolCongested)
+                qInfo() << QThread::currentThread() << "Texture created" << texture << "async & not congested:" << uploadAsynchronously
                          << "image:" << image << "with alpha channel:" << hasAlphaChannel << "shader" << conversionShader;
             }
 
@@ -277,7 +295,7 @@ GrallocTexture* GrallocTextureCreator::createTexture(const QImage& image, Shader
                     signalUploadComplete(texture, handle, textureSize);
                 };
 
-                if (async && !threadPoolCongested) {
+                if (uploadAsynchronously) {
                     QtConcurrent::run(m_threadPool, std::move(uploadFunc));
                 } else {
                     uploadFunc();
