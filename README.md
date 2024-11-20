@@ -21,3 +21,4 @@ There are a handful of libdeviceinfo settings that allow adjusting the behavior 
 
 - `HaliumQsgUseShaders` (default: true): Determines shader-based swizzling, falling back to Qt for texture uploads
 - `HaliumQsgAnimationDriver` (default: true): Enable or disable the custom QAnimationDriver
+- `HaliumQsgUploadThreads` (default: number of cores - 2): Raise or lower thread count for texture uploads, or disable with `0`.

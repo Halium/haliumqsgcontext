@@ -107,8 +107,9 @@ Q_SIGNALS:
     void uploadComplete(const GrallocTexture* texture, EGLImageKHR image, const int textureSize);
 
 private:
-    QThreadPool* m_threadPool;
     bool m_debug;
+    int m_nthreads;
+    QThreadPool* m_threadPool;
     static constexpr uint32_t convertUsage();
     static constexpr uint32_t convertLockUsage();
 };
@@ -144,7 +145,7 @@ private:
 
     void ensureBoundTexture(QOpenGLFunctions* gl) const;
     void ensureFbo(QOpenGLFunctions* gl) const;
-	
+
     void renderWithShader(QOpenGLFunctions* gl) const;
     bool dumpImageOnly(QOpenGLFunctions* gl) const;
     bool renderTexture(QOpenGLFunctions* gl) const;
