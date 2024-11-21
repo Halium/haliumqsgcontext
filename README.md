@@ -7,7 +7,8 @@ A Qt Scene Graph plugin for better hardware integration
 
 This plugin allows for tighter integration of Qt and Halium-based distributions.
 
-- Uses Android's GraphicBuffer to upload textures to the GPU, using multiple threads
+- Uses Android's GraphicBuffer to upload textures to the GPU
+- Using multiple threads
 - Exposes those GraphicBuffers to OpenGL as any other texture
 - Replaces the default QAnimationDriver with a solely VSync-based one
 
@@ -26,6 +27,7 @@ There are a handful of libdeviceinfo settings that allow adjusting the behavior 
 For example:
 
 ```
+# cat /etc/deviceinfo/devices/halium.yaml
 sargo:
   Vendor: Google
   PrettyName: Pixel 3a
