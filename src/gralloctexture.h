@@ -78,6 +78,22 @@ struct EglImageFunctions {
     PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES;
 };
 
+struct EGLImagePtrDeleter {
+    EGLImagePtrDeleter(EglImageFunctions& eglProcs) : m_eglProcs{eglProcs} {};
+    void operator()(EGLImageKHR* p) const
+    {
+        if (*p != EGL_NO_IMAGE_KHR) {
+            EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+            m_eglProcs.eglDestroyImageKHR(dpy, *p);
+        }
+        delete p;
+    };
+private:
+    EglImageFunctions m_eglProcs;
+};
+typedef std::shared_ptr<EGLImageKHR> EGLImagePtr;
+Q_DECLARE_METATYPE(EGLImagePtr);
+
 struct GLState {
     GLint prevProgram = 0;
     GLint prevFbo = 0;
@@ -104,7 +120,7 @@ public Q_SLOTS:
     void signalUploadComplete(const GrallocTexture* texture, struct graphic_buffer* handle, const int textureSize);
 
 Q_SIGNALS:
-    void uploadComplete(const GrallocTexture* texture, EGLImageKHR image, const int textureSize);
+    void uploadComplete(const GrallocTexture* texture, EGLImagePtr image, const int textureSize);
 
 private:
     bool m_debug;
@@ -131,7 +147,7 @@ public:
 
 public Q_SLOTS:
     void provideSizeInfo(const QSize& size);
-    void createdEglImage(const GrallocTexture* texture, EGLImageKHR image, const int textureSize);
+    void createdEglImage(const GrallocTexture* texture, EGLImagePtr image, const int textureSize);
 
 private Q_SLOTS:
     bool drawTexture(QOpenGLFunctions* gl) const;
@@ -155,14 +171,12 @@ private:
     const GLState storeGlState(QOpenGLFunctions* gl) const;
     void restoreGlState(QOpenGLFunctions* gl, const GLState& state) const;
 
-    void releaseResources() const;
-
     bool m_hasAlphaChannel;
     std::shared_ptr<ShaderBundle> m_shaderCode;
 
     mutable std::unique_ptr<QOpenGLFramebufferObject> m_fbo;
 
-    mutable EGLImageKHR m_image;
+    mutable EGLImagePtr m_image;
     mutable int m_textureSize;
     mutable QSize m_size;
     mutable GLuint m_texture;

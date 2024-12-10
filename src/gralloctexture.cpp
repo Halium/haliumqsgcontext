@@ -187,7 +187,9 @@ int GrallocTextureCreator::convertFormat(const QImage& image, int& numChannels, 
 // After the pixels have arrived at GPU memory, turn them into an EGLImage for easy consumption from within GL.
 void GrallocTextureCreator::signalUploadComplete(const GrallocTexture* texture, struct graphic_buffer* handle, const int textureSize)
 {
-    EGLImageKHR image = EGL_NO_IMAGE_KHR;
+    EGLImagePtrDeleter deleter(eglImageFunctions);
+    EGLImagePtr image = std::shared_ptr<EGLImageKHR>(new EGLImageKHR, deleter);
+    *image = EGL_NO_IMAGE_KHR;
 
     if (handle) {
         const EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -195,7 +197,7 @@ void GrallocTextureCreator::signalUploadComplete(const GrallocTexture* texture, 
         static const EGLint attrs[] = { EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE };
 
         void* native_buffer = graphic_buffer_get_native_buffer(handle);
-        image = eglImageFunctions.eglCreateImageKHR(dpy, context, EGL_NATIVE_BUFFER_ANDROID, native_buffer, attrs);
+        *image = eglImageFunctions.eglCreateImageKHR(dpy, context, EGL_NATIVE_BUFFER_ANDROID, native_buffer, attrs);
         graphic_buffer_free(handle);
     }
 
@@ -311,7 +313,7 @@ GrallocTexture* GrallocTextureCreator::createTexture(const QImage& image, Shader
 
 GrallocTexture::GrallocTexture(GrallocTextureCreator* creator, const bool hasAlphaChannel, std::shared_ptr<ShaderBundle> conversionShader,
                                EglImageFunctions eglImageFunctions, const bool async, QOpenGLContext* gl) :
-    QSGTexture(), m_image(EGL_NO_IMAGE_KHR), m_texture(0), m_textureSize(0),
+    QSGTexture(), m_image(std::make_shared<EGLImageKHR>(EGL_NO_IMAGE_KHR)), m_texture(0), m_textureSize(0),
     m_hasAlphaChannel(hasAlphaChannel), m_shaderCode(conversionShader), m_bound(false), m_valid(true),
     m_rendered(false), m_async(async), m_uploaded(!async), m_eglImageFunctions(eglImageFunctions), m_creator(creator), m_gl(gl)
 {
@@ -323,8 +325,6 @@ GrallocTexture::GrallocTexture() : m_valid(false)
 
 GrallocTexture::~GrallocTexture()
 {
-    releaseResources();
-
     if (m_fbo) {
         m_fbo.reset(nullptr);
     }
@@ -362,7 +362,7 @@ int GrallocTexture::textureId() const
 
     if (m_async) {
         QMutexLocker locker(&m_uploadMutex);
-        would_wait = (m_image == EGL_NO_IMAGE_KHR);
+        would_wait = (*m_image == EGL_NO_IMAGE_KHR);
     }
 
     // We can safely call ::drawTexture() again until successfully rendered.
@@ -402,7 +402,7 @@ void GrallocTexture::provideSizeInfo(const QSize& size)
     m_size = size;
 }
 
-void GrallocTexture::createdEglImage(const GrallocTexture* texture, EGLImageKHR image, const int textureSize)
+void GrallocTexture::createdEglImage(const GrallocTexture* texture, EGLImagePtr image, const int textureSize)
 {
     // GrallocTextureCreator "broadcasts" EGLImage readyness to every GrallocTexture it is currently uploading pixels for.
     // Just make sure this slot call is actually meant for us and disconnect when done.
@@ -442,7 +442,7 @@ bool GrallocTexture::dumpImageOnly(QOpenGLFunctions* gl) const
     gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    m_eglImageFunctions.glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, m_image);
+    m_eglImageFunctions.glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, *m_image);
 
     restoreGlState(gl, state);
 
@@ -592,7 +592,7 @@ void GrallocTexture::renderWithShader(QOpenGLFunctions* gl) const
     gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    m_eglImageFunctions.glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, m_image);
+    m_eglImageFunctions.glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, *m_image);
 
     m_shaderCode->program->setUniformValue(m_shaderCode->texture, textureUnit);
     m_shaderCode->program->setUniformValue(m_shaderCode->alpha, m_hasAlphaChannel);
@@ -689,13 +689,4 @@ void GrallocTexture::awaitUpload() const
         m_uploadCondition.wait(&m_uploadMutex);
     }
     qDebug() << "Upload complete";
-}
-
-void GrallocTexture::releaseResources() const
-{
-    if (m_image != EGL_NO_IMAGE_KHR) {
-        EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-        m_eglImageFunctions.eglDestroyImageKHR(dpy, m_image);
-        m_image = EGL_NO_IMAGE_KHR;
-    }
 }
